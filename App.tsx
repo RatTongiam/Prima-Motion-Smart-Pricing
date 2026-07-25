@@ -38,13 +38,25 @@ export interface ChartData {
 
 // --- Constants ---
 const APP_PASSWORD = "7024"; // 🔒 PASSWORD SETTING
-const EXCHANGE_RATES = { EUR: 37.08, USD: 31.83 };
-const SAFE_BUFFER = 10.0;
+
+// ค่าตั้งต้นสำหรับคำนวณราคา
+const DEFAULT_EXCHANGE_RATES: Record<Currency, number> = {
+  USD: 40.0,
+  EUR: 45.0,
+};
+
+// ค่าอ้างอิงตลาดเริ่มต้นกรณี API ไม่พร้อมใช้งาน
+const INITIAL_MARKET_RATES: Record<Currency, number> = {
+  EUR: 37.08,
+  USD: 31.83,
+};
+
+const THRESHOLD_PERCENT = 15; // เกณฑ์การเตือนความผันผวน 15%
 const BANK_LG_FEE_RATE = 2.0;
 
 const DEFAULT_INPUTS: CalculatorInputs = {
   currency: 'EUR',
-  customExchangeRate: EXCHANGE_RATES['EUR'] + SAFE_BUFFER,
+  customExchangeRate: DEFAULT_EXCHANGE_RATES['EUR'], // เริ่มต้นที่ 45 บาท
   productCostOrigin: 4550,
   freightInsuranceThb: 5000,
   dutyRatePercent: 10,
@@ -254,10 +266,45 @@ const App: React.FC = () => {
   const [presetName, setPresetName] = useState<string>('');
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
   
+  // Real-time Market Rates
+  const [marketRates, setMarketRates] = useState<Record<Currency, number>>(INITIAL_MARKET_RATES);
+  const [isLoadingRate, setIsLoadingRate] = useState<boolean>(false);
+
   const results = useMemo(() => calculateSmartPrice(inputs), [inputs]);
-  const marketRate = EXCHANGE_RATES[inputs.currency];
-  const safeRateThreshold = marketRate + SAFE_BUFFER;
-  const isRateTooLow = inputs.customExchangeRate < safeRateThreshold;
+
+  // ดึงอัตราแลกเปลี่ยนจริงจาก API
+  useEffect(() => {
+    const fetchLiveRates = async () => {
+      setIsLoadingRate(true);
+      try {
+        const res = await fetch('https://api.frankfurter.app/latest?from=THB&to=EUR,USD');
+        const data = await res.json();
+        if (data && data.rates) {
+          setMarketRates({
+            EUR: Number((1 / data.rates.EUR).toFixed(2)),
+            USD: Number((1 / data.rates.USD).toFixed(2))
+          });
+        }
+      } catch (error) {
+        console.error("Failed to fetch live exchange rates:", error);
+      } finally {
+        setIsLoadingRate(false);
+      }
+    };
+
+    fetchLiveRates();
+  }, []);
+
+  // Logic คำนวณตรวจสอบกรอบความผันผวน ±15% จากค่าตั้งต้น (USD=40, EUR=45)
+  const baseDefaultRate = DEFAULT_EXCHANGE_RATES[inputs.currency];
+  const currentLiveMarketRate = marketRates[inputs.currency];
+  
+  const minAllowedRate = baseDefaultRate * (1 - THRESHOLD_PERCENT / 100);
+  const maxAllowedRate = baseDefaultRate * (1 + THRESHOLD_PERCENT / 100);
+
+  const isRateBreachedLow = currentLiveMarketRate < minAllowedRate;
+  const isRateBreachedHigh = currentLiveMarketRate > maxAllowedRate;
+  const isMarketBreached = isRateBreachedLow || isRateBreachedHigh;
 
   // Check Auth on Mount
   useEffect(() => {
@@ -308,7 +355,13 @@ const App: React.FC = () => {
 
   const handleInputChange = (field: keyof CalculatorInputs, value: any) => setInputs(prev => ({ ...prev, [field]: Number(value) }));
   const handleToggle = (field: keyof CalculatorInputs, val: boolean) => setInputs(prev => ({ ...prev, [field]: val }));
-  const toggleCurrency = (currency: Currency) => setInputs(prev => ({ ...prev, currency, customExchangeRate: EXCHANGE_RATES[currency] + SAFE_BUFFER }));
+  
+  // สลับ currency แล้วใช้ Default Exchange Rate (USD=40, EUR=45)
+  const toggleCurrency = (currency: Currency) => setInputs(prev => ({ 
+    ...prev, 
+    currency, 
+    customExchangeRate: DEFAULT_EXCHANGE_RATES[currency] 
+  }));
 
   const pieData: ChartData[] = [
     { label: 'Landed', value: results.landedCost, color: '#260762' },
@@ -346,12 +399,12 @@ const App: React.FC = () => {
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                       <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
                     </span>
-                    <span className="text-[9px] font-bold text-[#4d2994] uppercase">Live</span>
+                    <span className="text-[9px] font-bold text-[#4d2994] uppercase">{isLoadingRate ? 'Syncing...' : 'Live Market'}</span>
                 </div>
                 <div className="h-3 w-px bg-[#d0c3f1]"></div>
                 <div className="flex gap-3 text-[10px] font-mono font-bold text-[#260762]">
-                    <span>EUR: {EXCHANGE_RATES.EUR.toFixed(2)}</span>
-                    <span>USD: {EXCHANGE_RATES.USD.toFixed(2)}</span>
+                    <span>EUR: {marketRates.EUR.toFixed(2)}</span>
+                    <span>USD: {marketRates.USD.toFixed(2)}</span>
                 </div>
             </div>
             {/* Controls */}
@@ -383,8 +436,24 @@ const App: React.FC = () => {
                 <div className="space-y-1">
                     <div className="flex gap-2 items-start">
                         <div className="w-1/2">
-                            <InputField label="Calc Rate" value={inputs.customExchangeRate} onChange={(v:any) => handleInputChange('customExchangeRate', v)} suffix="THB" className="font-bold" step={0.01} isError={isRateTooLow} />
-                            {isRateTooLow && <div className="text-[8px] text-red-500 font-bold mt-0.5 flex items-center gap-0.5 animate-pulse"><AlertTriangle size={8} /> Low</div>}
+                            <InputField 
+                                label="Calc Rate" 
+                                value={inputs.customExchangeRate} 
+                                onChange={(v:any) => handleInputChange('customExchangeRate', v)} 
+                                suffix="THB" 
+                                className="font-bold" 
+                                step={0.01} 
+                                isError={isMarketBreached} 
+                            />
+                            {isMarketBreached && (
+                                <div className="text-[7.5px] text-red-500 font-bold mt-0.5 flex items-center gap-0.5 animate-pulse leading-tight">
+                                    <AlertTriangle size={8} className="shrink-0" />
+                                    {isRateBreachedHigh 
+                                        ? `ตลาดจริง (${currentLiveMarketRate} THB) สูงเกิน +15% จากฐาน ${baseDefaultRate}` 
+                                        : `ตลาดจริง (${currentLiveMarketRate} THB) ต่ำเกิน -15% จากฐาน ${baseDefaultRate}`
+                                    }
+                                </div>
+                            )}
                         </div>
                         <InputField label="Product" value={inputs.productCostOrigin} onChange={(v:any) => handleInputChange('productCostOrigin', v)} suffix={inputs.currency} className="w-1/2" icon={DollarSign} />
                     </div>

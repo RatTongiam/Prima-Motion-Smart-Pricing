@@ -39,7 +39,7 @@ export interface ChartData {
 // --- Constants ---
 const APP_PASSWORD = "7024"; // 🔒 PASSWORD SETTING
 const EXCHANGE_RATES = { EUR: 37.08, USD: 31.83 };
-const SAFE_BUFFER = 5.0;
+const SAFE_BUFFER = 10.0;
 const BANK_LG_FEE_RATE = 2.0;
 
 const DEFAULT_INPUTS: CalculatorInputs = {
